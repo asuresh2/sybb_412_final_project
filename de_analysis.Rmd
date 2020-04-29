@@ -1,0 +1,363 @@
+---
+title: "Final Project"
+author: "Abhilash Suresh"
+date: "4/14/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(org.Hs.eg.db)
+library(tidyverse)
+library(dplyr)
+```
+
+## First we load the data into DESeq2 for further analysis. The output is from featureCounts.
+
+```{r}
+library(DESeq2)
+# Read in data from featurecounts output and then preprocess the counts matrix for import into DESeq2.
+countdata <- read.table("../counts_sorted_HISAT2_refseq.txt", header=TRUE, row.names=1)
+countdata <- countdata[ ,6:ncol(countdata)]
+
+# Rename columns to sample names.
+colnames(countdata) <- gsub("\\_sorted.bam$","",colnames(countdata))
+colnames(countdata) <- gsub("X.mnt.pan.courses.sybb412.axs1114.final_project.data.bam_files.bam_sorted.", "", colnames(countdata))
+
+# Convert to matrix.
+countdata <- as.matrix(countdata)
+head(countdata)
+
+# Assign condition.
+(condition <- factor(c(rep("ctl", 17), rep("exp", 19))))
+
+
+(coldata <- data.frame(row.names=colnames(countdata), condition))
+
+dds <- DESeqDataSetFromMatrix(countData = countdata, colData = coldata, design =~ condition)
+dds
+```
+
+## First we do some filtering to remove transcripts that are have very low expression. 
+
+```{r}
+nrow(dds)
+# Remove genes that have no counts.
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+nrow(dds)
+# Remove transcripts with less than one count in more than 10 samples, so at least 26 samples with one or more counts.
+keep <- rowSums(counts(dds) >= 1) >= 26
+dds <- dds[keep,]
+nrow(dds)
+
+dds_rm_samples <- dds
+colnames(dds_rm_samples)
+
+
+dds_rm_samples <- dds_rm_samples[,-(which(colnames(dds_rm_samples) %in% c("SRR5616895", "SRR5616897", "SRR5616903", "SRR5616892")))]
+```
+
+
+## Next, we plot the mean versus standard deviation for each gene to visualize the difference in variance by gene. 
+
+```{r}
+lambda <- 10^seq(from = -1, to = 2, length = 1000)
+cts <- matrix(rpois(1000*100, lambda), ncol = 100)
+library("vsn")
+meanSdPlot(cts, ranks = FALSE)
+```
+
+
+## We can also plot the same thing except with log transformed counts.
+```{r}
+log.cts.one <- log2(cts + 1)
+meanSdPlot(log.cts.one, ranks = FALSE)
+```
+
+
+
+## There are a couple different tarnsformations for variance stabilization, the variance stabilizing transformation (VST) which is for negative binomial data, and the regularized-logarithm transformation (rlog). I have run both, but for our analysis, I used the results of the vst algorithm.
+```{r}
+vsd <- vst(dds, blind = FALSE)
+head(assay(vsd), 3)
+rld <- rlog(dds, blind = FALSE)
+head(assay(rld), 3)
+
+vsd_rm_samples <- vst(dds_rm_samples, blind = FALSE)
+head(assay(vsd_rm_samples),3)
+```
+
+
+
+## Here we take the sample distances between each sample and all the others.
+```{r}
+sampleDists <- dist(t(assay(vsd)))
+sampleDists
+
+sampleDists_rm_samples <- dist(t(assay(vsd_rm_samples)))
+```
+## Here we visualize the differences between samples based on gene expression, and the sample type is on the right side. The samples have been clustered as well.
+```{r}
+#Plot sample distances.
+library("pheatmap")
+library("RColorBrewer")
+
+sampleDistMatrix <- as.matrix( sampleDists )
+sampleDistMatrix_rm_samples <- as.matrix( sampleDists_rm_samples )
+
+rownames(sampleDistMatrix) <- vsd$condition
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors,
+         main = "Sample to Sample Distances Heatmap")
+
+
+```
+
+## Now we perform PCA on the VST transformed data and plot the first two principal components along with sample type informatin.
+
+```{r}
+# PCA Plot
+pcaData <- plotPCA(vsd, intgroup = c( "condition"), returnData = TRUE)
+pcaData
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = condition)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data")
+
+
+
+# PCA Plot after removing samples.
+pcaData <- plotPCA(vsd_rm_samples, intgroup = c( "condition"), returnData = TRUE)
+pcaData
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = condition)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  ggtitle("PCA with VST data after removing samples")
+```
+
+Here we plot the MDS plot, similar to the PCA plot.
+```{r}
+mds <- as.data.frame(colData(vsd))  %>%
+         cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = condition)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data")
+
+mds <- as.data.frame(colData(vsd_rm_samples))  %>%
+         cbind(cmdscale(sampleDistMatrix_rm_samples))
+ggplot(mds, aes(x = `1`, y = `2`, color = condition)) +
+  geom_point(size = 3) + coord_fixed() + ggtitle("MDS with VST data after removing samples")
+```
+
+## Now we perform the actual DESeq analysis and store the results.
+```{r}
+dds <- DESeq(dds)
+res <- results(dds)
+res
+
+dds_rm_samples <- DESeq(dds_rm_samples)
+res_rm_samples <- results(dds_rm_samples)
+res_rm_samples
+```
+
+
+## Next we extract the differentially expressed genes that have an adjusted pvalue less than 0.05.
+```{r}
+res <- results(dds, contrast=c("condition","exp","ctl"))
+mcols(res, use.names = TRUE)
+summary(res)
+
+res_rm_samples <- results(dds_rm_samples, contrast=c("condition","exp","ctl"))
+mcols(res_rm_samples, use.names = TRUE)
+summary(res_rm_samples)
+
+res.05 <- results(dds, alpha = 0.05)
+table(res.05$padj < 0.05)
+
+res_rm_samples.05 <- results(dds_rm_samples, alpha = 0.001)
+table(res_rm_samples.05$padj < 0.001)
+```
+
+## Here we extract genes based on a log fold change threshold, and choose the significant ones based on the adjusted pvalue.
+```{r}
+resLFC1 <- results(dds, lfcThreshold=1)
+table(resLFC1$padj < 0.1)
+
+resLFC1_rm_samples <- results(dds_rm_samples, lfcThreshold=1)
+table(resLFC1_rm_samples$padj < 0.1)
+```
+
+
+```{r}
+sum(res$pvalue < 0.05, na.rm=TRUE)
+sum(!is.na(res$pvalue))
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+```{r}
+library(DT)
+
+resSig <- subset(res, padj < 0.1)
+head(resSig[ order(resSig$log2FoldChange), ])
+head(resSig[ order(resSig$log2FoldChange, decreasing = TRUE), ])
+resSig
+datatable(as.data.frame(resSig), rownames = rownames(resSig), colnames = colnames(resSig), caption = "The top 10 most significant differentially expressed genes.")
+
+```
+
+```{r}
+topGene <- rownames(res)[which.min(res$padj)]
+plotCounts(dds, gene = topGene, intgroup=c("condition"))
+```
+
+```{r}
+library("ggbeeswarm")
+geneCounts <- plotCounts(dds, gene = topGene, intgroup = c("condition"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = condition, y = count)) +
+  scale_y_log10() +  geom_beeswarm(cex = 3)
+
+```
+
+```{r}
+library("apeglm")
+resultsNames(dds)
+res_temp <- lfcShrink(dds, coef="condition_exp_vs_ctl", type="apeglm")
+plotMA(res_temp, ylim = c(-5, 5))
+```
+
+## Here we plot all the genes based on normalized log counts versus log fold change, and label the top gene.
+```{r}
+plotMA(res, ylim = c(-5,5))
+topGene <- rownames(res_temp)[which.min(res_temp$padj)]
+with(res_temp[topGene, ], {
+  points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+  text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+})
+```
+
+```{r}
+hist(res$pvalue[res$baseMean > 1], breaks = 0:20/20,
+     col = "grey50", border = "white")
+```
+
+## Here we plot a heatmap of the top differentially expressed genes by sample.
+```{r}
+# Mat has the hallmark set analysis.
+library("genefilter")
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+mat_genes  <- assay(vsd)[ topVarGenes, ]
+mat_genes  <- mat_genes - rowMeans(mat_genes)
+anno <- as.data.frame(colData(vsd)[, c("condition")])
+rownames(anno) <- colnames(mat_genes)
+#pdf("C:/Users/suresha/Documents/First Year/Bioinformatics Masters/SYBB_412/cluster_folder/final_project/heatmap_clustering_genes.pdf",width=20, height=20)
+pheatmap(mat_genes, annotation_col = anno, height=15, width=15, fontsize_col = 5, fontsize_row = 5, main="Heatmap of Clustered Samples")
+#dev.off()
+```
+
+
+## Here we perform the gene set enrichment analysis using fgsea, and make a table of the most highly enriched pathways.
+```{r}
+library(fgsea)
+
+
+resOrdered <- res[order(res$pvalue),]
+head(resOrdered)
+resOrdered$SYMBOL <- row.names(resOrdered)
+resOrdered <- as.tibble(resOrdered)
+res_ordered_subset <- resOrdered %>% 
+  dplyr::select(SYMBOL, stat)
+res_ordered_subset
+ranks <- deframe(res_ordered_subset)
+
+head(ranks, 20)
+hallmark_gene_symbol_7.1 <- gmtPathways("h.all.v7.1.symbols.gmt")
+
+fgseaRes <- fgsea(pathways = hallmark_gene_symbol_7.1, stats = ranks, nperm = 1000)
+knitr::kable(head(fgseaRes[order(pval),c(1:5) ],n = 10),caption = "Top Pathways")
+
+fgseaResTidy <- fgseaRes %>%
+  as_tibble() %>%
+  arrange(desc(NES))
+fgseaResTidy %>% 
+  dplyr::select(-leadingEdge, -ES, -nMoreExtreme) %>% 
+  arrange(padj) %>% 
+  DT::datatable()
+```
+
+## Here we plot the pathways with the highest enrichment scores and also show which ones are significant. 
+```{r}
+#pdf("C:/Users/suresha/Documents/First Year/Bioinformatics Masters/SYBB_412/cluster_folder/final_project//hallmark_pathways_encrichment_scores_GSEA.pdf")
+ggplot(fgseaResTidy, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways NES from GSEA") + 
+  theme_minimal()
+#dev.off()
+```
+
+
+## Here we perform gene set variation analysis,and then we plot a heatmap of the enrichment scores of each pathway for each sample for the most highly enriched pathways.
+```{r}
+library(Biobase)
+library(genefilter)
+library(limma)
+library(RColorBrewer)
+library(GSVA)
+countdata
+gsva_res <- GSVA::gsva(expr=countdata, gset.idx.list=hallmark_gene_symbol_7.1, parallel.sz =  4)
+
+#pdf("C:/Users/suresha/Documents/First Year/Bioinformatics Masters/SYBB_412/cluster_folder/final_project/heatmap_clustering_gsva.pdf",width=20, height=20)
+pheatmap(gsva_res, annotation_col = anno, height=15, width=15, fontsize_col = 5, fontsize_row = 5, main="Heatmap of Clustered Samples")
+#dev.off()
+```
+
+```{r}
+
+
+mat_design_2 <- model.matrix(~0+condition)
+
+colnames(mat_design_2) <- levels(condition)
+
+
+contrasts_2 <- makeContrasts(expVctl = exp - ctl,
+                           levels=mat_design_2)
+
+
+#mat_design    <- lst_analysis_3$DEG$mat_design
+#mat_contrasts  <- lst_analysis_3$DEG$contrasts
+
+
+
+# create the fits for GENES
+fit   <- limma::lmFit(object = countdata, mat_design_2 )
+fit2  <- limma::contrasts.fit(fit, contrasts_2)
+fit2  <- limma::eBayes(fit2, robust = TRUE)
+toptable(fit)
+
+fit <- lmFit(gsva_res, mat_design_2)
+fit <- eBayes(fit)
+toptable(fit)
+```
+
+
+```{r sessionInfo, eval=TRUE }
+
+sessionInfo()   
+
+```
+
