@@ -1,7 +1,7 @@
 ---
 title: "Final Project"
 author: "Abhilash Suresh"
-date: "4/14/2020"
+date: "4/29/2020"
 output: html_document
 ---
 
@@ -54,6 +54,7 @@ keep <- rowSums(counts(dds) >= 1) >= 26
 dds <- dds[keep,]
 nrow(dds)
 
+# Try removing the samples that show abnormal expression based on the MDS plot (shown in the report).
 dds_rm_samples <- dds
 colnames(dds_rm_samples)
 
@@ -87,6 +88,8 @@ head(assay(vsd), 3)
 rld <- rlog(dds, blind = FALSE)
 head(assay(rld), 3)
 
+
+# Perform the same variance stabilization on the subset after the samples have been removed.
 vsd_rm_samples <- vst(dds_rm_samples, blind = FALSE)
 head(assay(vsd_rm_samples),3)
 ```
