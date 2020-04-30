@@ -20,7 +20,7 @@ library(dplyr)
 ```{r}
 library(DESeq2)
 # Read in data from featurecounts output and then preprocess the counts matrix for import into DESeq2.
-countdata <- read.table("../counts_sorted_HISAT2_refseq.txt", header=TRUE, row.names=1)
+countdata <- read.table("./counts_sorted_HISAT2_refseq.txt", header=TRUE, row.names=1)
 countdata <- countdata[ ,6:ncol(countdata)]
 
 # Rename columns to sample names.
@@ -287,7 +287,7 @@ res_ordered_subset
 ranks <- deframe(res_ordered_subset)
 
 head(ranks, 20)
-hallmark_gene_symbol_7.1 <- gmtPathways("h.all.v7.1.symbols.gmt")
+hallmark_gene_symbol_7.1 <- gmtPathways("./h.all.v7.1.symbols.gmt")
 
 fgseaRes <- fgsea(pathways = hallmark_gene_symbol_7.1, stats = ranks, nperm = 1000)
 knitr::kable(head(fgseaRes[order(pval),c(1:5) ],n = 10),caption = "Top Pathways")
@@ -321,7 +321,7 @@ library(genefilter)
 library(limma)
 library(RColorBrewer)
 library(GSVA)
-countdata
+
 gsva_res <- GSVA::gsva(expr=countdata, gset.idx.list=hallmark_gene_symbol_7.1, parallel.sz =  4)
 
 #pdf("C:/Users/suresha/Documents/First Year/Bioinformatics Masters/SYBB_412/cluster_folder/final_project/heatmap_clustering_gsva.pdf",width=20, height=20)
